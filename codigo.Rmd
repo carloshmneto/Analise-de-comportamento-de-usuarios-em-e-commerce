@@ -1,0 +1,493 @@
+---
+title: "Análise de comportamento de usuários em e-commerce"
+author: "Carlos Henrique Mora Neto (nUSP 13751274)"
+date: "2024-11-28"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+
+list.of.packages <- c("tidyverse", "cluster", "factoextra", "ggstats", "GGally", "psych", "clValid", "fossil", "dendextend", "patchwork")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+```
+
+# Introdução
+Para realização desse trabalho, foi utilizada a base de dados "Online Shoppers Purchasing Intention Dataset", obtidos através do repositório da UCI Machine Learning Repository.
+
+Este dataset foi projetado para analisar o comportamento de usuários em websites de e-commerce, com o objetivo de prever se um usuário fará uma compra. Ele contém 12.330 observações e 18 variáveis, que incluem informações sobre a atividade do usuário, como número de páginas visitadas, tempo gasto em diferentes tipos de páginas, dados de proveniência, informações sazonais e uma variável binária de saída que indica se o usuário realizou ou não uma compra.
+
+Variáveis principais:
+
+* Administrative, Administrative_Duration: Número de páginas administrativas visitadas e tempo gasto nas mesmas
+* Informational, Informational_Duration: Número de páginas informativas visitadas e tempo gasto nas mesmas
+* ProductRelated, ProductRelated_Duration: Número de páginas de produtos visitadas e tempo gasto nas mesmas
+* BounceRates, ExitPages: Taxas de rejeição e saída
+* PageValues: Valor da página para o usuário, calculada com base no número de visitas e no resultado da visita do cliente na página, gerando compra ou não
+* SpecialDay: Indica proximidade com uma data especial (1 na data especial, e vai aumentando ou diminuindo gradativamente ao se aproximar dela)
+* OperatingSystems: Sistema operacional utilizado
+* Browser: Navegador utilizado
+* Region: Região do visitante
+* TrafficType: Fonte de tráfego do visitante
+* VisitorType: Tipo de visitante (novo ou recorrente)
+* Weekend: Indica se a visita foi feita no final de semana
+* Revenue: Variável-alvo indicando se houve uma compra
+
+# Motivação
+
+O comportamento online dos consumidores é um tema crucial para o sucesso de estratégias de e-commerce. Entender o que leva um usuário a realizar uma compra pode ajudar empresas a otimizar a experiência do cliente, personalizar campanhas de marketing e maximizar as conversões. O estudo pretende identificar padrões no comportamento de navegação e compreender quais fatores influenciam a decisão de compra. Isso pode ser útil tanto para análises preditivas quanto exploratórias.
+
+Para cumprir esse objetivo, a proposta desse trabalho é a realização de modelos de clusterização, aliados a técnicas de redução de dimensionalidade (Análise de Componentes Principais e Análise Fatorial), a fim de determinar um perfil generalizado dos tipos de visitantes dessas páginas que tenham maior probabilidade em resultar em uma compra, dessa forma facilitando o processo de marketing direcionado e elevando lucros.
+
+# Pacotes utilizados
+```{r, message = FALSE}
+library(tidyverse)
+library(clValid)
+library(cluster)
+library(psych)
+library(patchwork)
+library(factoextra)
+library(corrplot)
+library(GGally)
+library(fossil)
+library(dendextend)
+```
+
+# Carregamento e exploração dos dados
+```{r}
+base_dir <- dirname(rstudioapi::getActiveDocumentContext()$path)
+csv_path <- file.path(base_dir, "dados", "online_shoppers_intention.csv")
+
+df <- read.csv(csv_path)
+
+head(df)
+
+str(df)
+
+summary(df)
+
+colSums(is.na(df))
+```
+
+Com essa análise, conclui-se que a base está pronta para as próximas etapas, visto que não há nenhum dado faltante. Dentre as variáveis, 7 são numéricas contínuas, 6 são numéricas discretas, 2 são categóricas e duas são binárias. Para as análises, essas variáveis de tipos distintos serão separadas para uma melhor visualização de cada uma.
+
+# Visualização exploratória dos dados
+
+## Distribuição das Variáveis Numéricas
+```{r}
+ggplot(df, aes(x = as.factor(Revenue))) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribuição de Compras", x = "Revenue", y = "Contagem")
+
+ggplot(df, aes(x = as.factor(Weekend))) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribuição de Visitas nos fins de semana", x = "Weekend", y = "Contagem")
+```
+
+Como a variável principal considerada nesse projeto, o Revenue tem uma distribuição assim como esperada, com a maior parte dos visitantes do website não resultando suas visitas em compras.
+
+A mesma situação ocorre com a variável "Weekend", onde a maior parte das visitas não ocorre no fim de semana, o que pode indicar que essa variável pode ter pouca importância para as previsões futuras.
+
+```{r}
+df %>%
+  select_if(is.double) %>%
+  bind_cols(ProductRelated = df$ProductRelated) %>%
+  gather(key = "key", value = "value") %>%
+  ggplot(aes(value)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "black", alpha = 0.7) +
+  facet_wrap(~key, scales = "free") +
+  labs(title = "Distribuições das Variáveis Contínuas", x = "Valor", y = "Frequência")
+```
+
+As distribuições das variáveis contínuas parecem ser todas próximas do esperado, com a maior parte das informações próximas de 0, visto que a maior parte dos visitantes acaba não comprando nada na visita, é normal que a interação dos mesmos com atributos do site sejam baixas. 
+
+Por outro lado, uma variável que se destaca é a relacionada à porcentagem de saídas foi a única na qual se mostrou mais alta, com sites com taxas próximas de 2%, e um pico aos 20% em provavelmente alguma página com erro, ou possívelmente sendo uma página de finalização de compra.
+
+```{r}
+int_vars <- names(df)[sapply(df, is.integer)]
+
+df_long_int <- df %>%
+  select(all_of(int_vars), -ProductRelated) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value")
+
+ggplot(df_long_int, aes(x = Value)) +
+  geom_bar(fill = "steelblue", color = "black", alpha = 0.8) +
+  facet_wrap(~Variable, scales = "free", ncol = 3) +
+  labs(title = "Distribuição de Variáveis Discretas", x = "Valor", y = "Contagem") +
+  theme_minimal()
+```
+
+Já para variáveis discretas, as distribuições se mostram mais variadas, mas sem nenhum destaque muito chamativo.
+
+## Distribuição das Variáveis Categóricas
+```{r}
+ggplot(df, aes(x = VisitorType, fill = Revenue)) +
+  geom_bar(position = "fill", alpha = 0.8) +
+  labs(title = "Proporção de Visitantes por Revenue", x = "Tipo de Visitante", y = "Proporção") +
+  scale_fill_manual(values = rainbow(2L)) +
+  theme_minimal()
+
+ggplot(df, aes(x = Month, fill = as.factor(Revenue))) +
+  geom_bar(position = "dodge", color = "black", alpha = 0.7) +
+  labs(title = "Distribuição de Compras por Mês", x = "Mês", y = "Contagem", fill = "Revenue") +
+  scale_fill_manual(values = c("red", "blue")) +
+  scale_x_discrete(limits = c("Feb", "Mar", "May", "June", 
+                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
+  theme_minimal()
+```
+
+Para as variáveis categóricas, as distribuições correlacionadas à variável Revenue dão um ponto de vista interessante: relacionando a coluna "VisitorType", observa-se que o tipo de visitante com maior porcentagem de compra é o visitante novo, indicando que pessoas que visitam o site com frequência devem ter o costume de entrar apenas para observação. 
+
+Já no gráfico de meses, as colunas de março, maio, novembro e dezembro se destacam significativamente com maior tráfego no total, possivelmente considerando épocas de feriado, sendo no final do ano o momento em que esse tráfego maior realmente representa um aumento considerável em vendas, especialmente em novembro. Isso tornaria essa variável como uma potencial variável importante para ajudar a traçar o perfil do visitante, algo que pode ser comprovado em breve.
+
+## Correlação das Variáveis
+```{r}
+df_n <- df %>% select_if(is.numeric)
+
+df_n$Revenue <- as.numeric(as.factor(df$Revenue))
+df_n$Weekend <- as.numeric(as.factor(df$Weekend))
+
+cor_matrix <- cor(df_n)
+
+corrplot(cor_matrix, method = "color", addCoef.col = "black", tl.cex = 0.8, number.cex = 0.4)
+title(main = "Matriz de Correlação entre variáveis numéricas", line = 2.5)
+```
+
+Esse mapa de calor indicou correlações relativamente baixas em praticamente todas as variáveis, com exceções principalmente em relação às variáveis de tipos de páginas visitadas e tempo gasto nas mesmas. Isso poderia indicar uma possibilidade de problema no momento da aplicação das técnicas de Análise das Componentes Principais e Análise Fatorial, visto que ambas dependem de correlações altas entre as variáveis originais para serem mais efetivas em suas funções de redução de dimensionalidade.
+
+Fora desse grupo, uma única correlação se destaca, entre Revenue e PageValues, mesmo que fosse uma correlação previsível, visto que o valor da página é calculado diretamente utilizando a probabilidade de venda da mesma.
+
+## Comparação de Variáveis por Revenue
+```{r}
+cont_vars <- names(df)[sapply(df, is.numeric)]
+
+cont_groups <- split(cont_vars, ceiling(seq_along(cont_vars) / 3))
+
+plots <- lapply(cont_groups, function(vars) {
+
+  df_selected <- df %>%
+    select(all_of(vars), Revenue) %>%
+    select(-one_of(c("Browser", "OperatingSystems", "SpecialDay", "Region", "TrafficType")), everything())
+  
+  df_selected %>%
+    pivot_longer(cols = all_of(vars), names_to = "Variable", values_to = "Value") %>%
+    ggplot(aes(x = as.factor(Revenue), y = Value, fill = as.factor(Revenue))) +
+    geom_boxplot(alpha = 0.7, outlier.color = "red", outlier.size = 1) +
+    facet_wrap(~Variable, scales = "free", ncol = 3) +
+    labs(title = "Boxplots de Variáveis Contínuas por Revenue", 
+         x = "Revenue", y = "Valor") +
+    theme_minimal() +
+    theme(legend.position = "none")
+})
+
+for (i in 1:3) {
+  print(plots[[i]])
+}
+```
+
+Algumas variáveis interessantes para se observar que tem uma mudança significativa ao se comparar casos em que a venda foi executada ou não são as variáveis indicativas da quantidade de páginas e tempo gasto nelas, especialmente em páginas de produto e administrativas, que crescem em visitantes que realizam compras. Outras que também apresentam relação, mesmo que inversa, são as de saída e rejeição, quanto menos porcentagem de saída da página, maior a chance de venda. São relações esperadas no geral, mas podem ser boas indicativas de variáveis interessantes para análises futuras.
+
+```{r}
+ggplot(df, aes(x = Region, fill = as.factor(Revenue))) +
+  geom_bar(position = "dodge", color = "black", alpha = 0.7) +
+  labs(title = "Distribuição de Compras por Região", x = "Região", y = "Contagem", fill = "Revenue") +
+  scale_fill_manual(values = c("red", "blue")) +
+  scale_x_discrete(limits = c("1", "2", "3", "4", "5", "6", "7", "8", "9")) +
+  theme_minimal()
+```
+
+Esse gráfico indica uma prevalência clara de visitas nas regiões 1 e 3 especialmente, mas a porcentagem de compras por visitas totais parece ser aproximadamente igual independente da região. Pode ser indicativo de uma variável menos relevante para a análise.
+
+```{r}
+df_filtered <- df %>% filter(SpecialDay != "0")
+
+ggplot(df_filtered, aes(x = SpecialDay, fill = as.factor(Revenue))) +
+  geom_bar(position = "dodge", color = "black", alpha = 0.7) +
+  labs(title = "Distribuição de Compras próximas a Datas Especiais", x = "Proximidade da data especial", y = "Contagem", fill = "Revenue") +
+  scale_fill_manual(values = c("red", "blue")) +
+  theme_minimal()
+```
+
+Com base nessa análise, retirados os valores de "SpecialDay" iguais a 0 (distantes de um dia diferente), nota-se que a quantidade de vendas realmente é influenciada pelos feriados no geral, com vendas maiores especialmente com dois dias de antecedência ao dia especial. Curiosamente, o dia em si é o que tem menor taxa de vendas entre os outros.
+
+# Pré-Processamento dos Dados
+
+## Codificando variáveis como fatores
+
+Transforma-se as variáveis binárias de TRUE/FALSE para 1/0, e as categóricas em valores indicadores de sua sequência
+```{r}
+df <- df %>%
+  mutate(
+    Weekend = as.numeric(Weekend)
+  )
+
+df$Month <- factor(df$Month, levels = c("Jan", "Feb", "Mar", "Apr", "May", "June", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))
+df$Month <- as.numeric(df$Month)
+
+df$VisitorType <- as.numeric(factor(df$VisitorType, levels = c("New_Visitor", "Returning_Visitor", "Other")))
+```
+
+## Escalonando variáveis numéricas
+
+De acordo com a necessidade do PCA, as variáveis são normalizadas
+```{r}
+num_cols <- sapply(df, is.numeric)
+df[num_cols] <- scale(df[num_cols])
+
+head(df)
+```
+
+# Análise de Componentes Principais (PCA)
+```{r}
+pca <- prcomp(df %>% select(-Revenue), center = TRUE, scale. = TRUE)
+```
+
+## Variância explicada pelos componentes principais
+```{r}
+pca_var <- summary(pca)$importance[2,]
+print(pca_var)
+
+fviz_eig(pca, addlabels = TRUE, barfill = "steelblue", barcolor = "black") +
+  ggtitle("Scree Plot: Componentes Principais") +
+  xlab("Componentes Principais") +
+  ylab("Variância Explicada (%)")
+
+pca_var_cum <- cumsum(summary(pca)$importance[2, ])
+
+num_pcs_90 <- which(pca_var_cum >= 0.9)[1]
+
+pca_df <- as.data.frame(pca$x[, 1:num_pcs_90]) %>%
+  mutate(Revenue = df$Revenue)
+
+cat("Número de componentes necessários para atingir 90% da variância explicada:", num_pcs_90, "\n")
+```
+
+Aplicada a Análise de Componentes Principais, o problema comentado anteriormente se concretizou: por conta das correlações baixas entre as variáveis, os primeiros componentes principais acabaram não tendo uma variância explicada proporcional muito alta, diminuindo a eficiência dessa análise. Juntando os dois primeiros, a variância chega a aproximadamente 31%, valor abaixo do esperado. Apesar disso, o PCA ainda pode ser utilizado na sequência desse projeto, tanto para facilitação de visualizações dos dados, quanto para redução de ruído na aplicação dos agrupamentos.
+
+Para a clusterização realizada em breve, será utilizado esse novo conjunto de 12 componentes principais que, apesar de ter uma dimensionalidade não tão reduzida do original quanto esperado, pelo menos atinge 90% da variância explicada e pode ser importante de outras formas.
+```{r}
+pca_data <- as.data.frame(pca$x[, 1:2]) %>%
+  mutate(Revenue = df$Revenue)
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = as.factor(Revenue))) +
+  geom_point(alpha = 0.7) +
+  labs(title = "Vendas no Espaço PCA", x = "PC1 (20.3%)", y = "PC2 (10.6%)", color = "Revenue") +
+  scale_color_manual(values = c("red", "blue"))
+```
+
+Analisando a diferença das classes de "Revenue" (compras) nos dois componentes principais, percebe-se que, apesar da variância explicada baixa, já foi possível de certa forma se capturar uma separação relativamente perceptível entre os dois tipos, o que pode ser um sinal positivo para o restante das análises.
+
+## Variáveis contribuintes para cada componente e biplot
+```{r}
+fviz_contrib(pca, choice = "var", axes = 1:2, top = 10)
+
+filtered_rotation <- pca$rotation[-c(9:17), -c(3:17)]
+filtered_pca <- pca
+filtered_pca$rotation <- filtered_rotation
+
+par(mar = c(5, 0.5, 1, 0.5), cex = 0.7, cex.axis = 0.7, cex.lab = 0.8, cex.main = 0.8)
+
+biplot(filtered_pca, scale = 0, cex = c(0.3, 1), pch = 16, col = c("blue", "red"),
+       main = "Biplot - PCA", 
+       xlab = "Componente Principal 1", 
+       ylab = "Componente Principal 2")
+```
+Visualizando as variáveis mais relevantes para os componentes principais, percebe-se novamente que as análises iniciais fizeram sentido: as 8 variáveis com mais significância para os dois primeiros componentes tinham tido claras diferenças nas análises de seus boxplots iniciais. Além disso, através da análise do biplot, nota-se que, assim como notado anteriormente, as variáveis relacionadas a páginas e duração nelas tem relações similares, enquanto páginas de saída e rejeição tem uma conexão similares entre si e oposta às anteriores, como observado pelas setas e suas direções.
+
+# Análise Fatorial por Máxima Verossimilhança
+
+Antes da realização da análise fatorial, realizou-se testes para definição se essa análise seria significativa para o projeto ou não.
+
+## Teste Kaiser-Meyer-Olkin (KMO)
+```{r}
+KMO(df %>% select(-Revenue))
+```
+
+O valor de KMO geral em 0.64 indica uma adequação mediana para a análise fatorial. Não chega a ser um valor ideal, que seria maior que 0.7, mas estando acima de 0.6 pode ser considerado aceitável para efetuação dessa análise.
+
+Observando valores de variáveis específicas, quatro variáveis se destacam negativamente: BounceRates, ExitRates, OperatingSystems e SpecialDay, todas com valores abaixos de 0.6; isso poderia indicar uma necessidade de exclusão de tais variáveis da análise, com valores considerados baixos de correlação. Entretanto, como não ficaram tão abaixo e acabaram dentro de um intervalo considerável, talvez possam ser mantidas. Para conclusão dessa análise, resolveu-se realizar mais um teste, para servir de complemento ao já realizado.
+
+## Teste de Esfericidade de Bartlett
+```{r}
+cortest.bartlett(df %>% select(-Revenue))
+```
+
+O valor do teste de Bartlett é altamente significativo (p-valor < 0.05), indicando que as variáveis têm correlações suficientes para justificar a aplicação da análise fatorial. Considerando os dois testes, decide-se continuar com essa análise fatorial, visto que os resultados se mostraram satisfatórios no geral.
+ 
+```{r}
+fa <- factanal(x = df %>% select(-Revenue), factors = 2, rotation = "varimax", scores = "regression")
+```
+
+## Cargas fatoriais
+```{r}
+print(fa$loadings)
+```
+
+Considerando a análise de fatores, segue-se um padrão similar ao PCA, com variância explicada proporcional baixa entre os dois primeiros considerados. Além disso, a alta importância de variáveis de visitas a páginas específicas para o fator 1 e de saída para o fator 2 seguem igualmente as conclusões da primeira análise. Considerando isso, espera-se que a diferença das análises não tenha sido tão significativa, e talvez não haja a necessidade de se seguir com ambas, visto suas similaridades de resultados.
+
+```{r}
+fa_data <- fa$scores
+fa_data <- as.data.frame(fa_data)
+fa_data$Revenue <- df$Revenue
+
+ggplot(fa_data, aes(x = Factor1, y = Factor2, color = as.factor(Revenue))) +
+  geom_point(alpha = 0.7) +
+  labs(title = "Vendas no Espaço Fatorial", x = "Fator 1", y = "Fator 2", color = "Revenue") +
+  scale_color_manual(values = c("red", "blue"))
+```
+
+Novamente igual a análise de componentes principais, a variável "Revenue" em relação aos dois fatores principais conseguiu captar de certa forma um padrão entre as duas classes, mas não de forma totalmente satisfatória, ainda tendo muita aleatoriedade envolvida. 
+
+# Comparação Análise Fatorial vs PCA
+```{r}
+pca_scores <- pca$x[, 1:2]
+fa_scores <- fa$scores
+
+scores_df <- data.frame(
+  ML_Factor1 = fa_scores[, 1],
+  ML_Factor2 = fa_scores[, 2],
+  PCA_Factor1 = pca_scores[, 1],
+  PCA_Factor2 = pca_scores[, 2]
+)
+
+ggplot(scores_df, aes(x = PCA_Factor1, y = ML_Factor1)) +
+  geom_point(alpha = 0.6) +
+  labs(
+    title = "Comparação dos Escores dos Fatores (PCA vs Máxima Verossimilhança)",
+    x = "Fator 1 (PCA)",
+    y = "Fator 1 (MV)"
+  ) +
+  theme_minimal()
+```
+
+Comparando diretamente os dois métodos aplicados, comprova-se essa similaridade entre ambos, com uma relação linear bem clara entre ambos. Os desvios mostram que as análises não são idênticas na forma como atribuem importância às variáveis originais, mas não é suficiente para serem analisadas separadamente. Considerando isso, somente o PCA será utilizado na clusterização.
+
+# Clusterização (K-Means)
+
+## Determinar o número ideal de clusters com o método da Silhueta
+```{r}
+silhouette_scores <- numeric()
+for (k in 2:10) {
+  kmeans_result <- kmeans(df %>% select(-Revenue), centers = k, nstart = 50, iter.max = 100)
+  sil <- silhouette(kmeans_result$cluster, dist(df %>% select(-Revenue)))
+  silhouette_scores[k] <- mean(sil[, "sil_width"])
+}
+optimal_k <- which.max(silhouette_scores)
+
+plot(2:10, silhouette_scores[2:10], type = "b", pch = 19, col = "steelblue",
+     xlab = "Número de Clusters", ylab = "Média do Silhouette Score",
+     main = "Escolha do Número de Clusters")
+```
+
+Aplicando o método da Silhueta e comparando os agrupamentos, conclui-se que o ideal é seguir com apenas 2 clusters, o que era o esperado, considerando o objetivo do estudo de prever duas classes resposta (venda ou não). Dessa forma, serão aplicadas clusterizações com k= 2.
+
+## Aplicar K-Means para a base original
+```{r}
+set.seed(42)
+kmeans_result <- kmeans(df %>% select(-Revenue), centers = optimal_k, nstart = 25)
+
+df$Cluster <- as.factor(kmeans_result$cluster)
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = df$Cluster)) +
+  geom_point(alpha = 0.7) +
+  labs(title = "Clusters no Espaço PCA (K-Means - Cluster 1)", x = "PC1", y = "PC2", color = "Cluster") +
+  scale_color_manual(values = rainbow(optimal_k))
+```
+
+## Aplicar K-Means para a base gerada pelo PCA
+```{r}
+set.seed(42)
+kmeans_result <- kmeans(pca_df %>% select(-Revenue), centers = optimal_k, nstart = 25)
+
+df$Cluster2 <- as.factor(kmeans_result$cluster)
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = df$Cluster2)) +
+  geom_point(alpha = 0.7) +
+  labs(title = "Clusters no Espaço PCA (K-Means - Cluster 2)", x = "PC1", y = "PC2", color = "Cluster") +
+  scale_color_manual(values = rainbow(optimal_k))
+```
+
+Comparando os dois conjuntos de clusters gerados pelos diferentes métodos, se torna bem complicada a tarefa de encontrar diferenças, apesar do fato de os dois métodos terem invertido o valor de cada cluster. Isso pode indicar que a redução de dimensionalidade realmente não teve efeito significativo nos dados, assim como esperado. Ainda assim, seguem outras comparações dos métodos:
+
+## Comparação entre clusters
+
+### Rand Index (Comparação com Revenue)
+```{r}
+cat("Rand Index para cluster na base original:")
+rand.index(as.numeric(df$Revenue), as.numeric(df$Cluster))
+
+cat("Rand Index para cluster na base do PCA:")
+rand.index(as.numeric(df$Revenue), as.numeric(df$Cluster2))
+```
+
+### Índice de Dunn / Calinski-Harabasz
+```{r, message = FALSE}
+cl <- clValid(df %>% select(-Revenue, -Cluster, -Cluster2), nClust = 2, clMethods = "kmeans", validation = "internal", maxitems = 15000)
+
+cl2 <- clValid(pca_df %>% select(-Revenue), nClust = 2, clMethods = "kmeans", validation = "internal", maxitems = 15000)
+
+summary(cl)
+summary(cl2)
+```
+
+As duas comparações apresentam resultados opostos: ao se comparar os métodos através do Rand Index, comparando clusters com a variável "Revenue", os clusters gerados por PCA obtiveram um resultado melhor, mesmo que por bem pouco, provavelmente indicando que a redução de ruído da base foi relevante para essa amostra. 
+
+Entretanto, analisando outras métricas, como conectividade e índice de Dunn, é indicado que os clusters com base original foram mais coesos e compactos entre si, o que poderia indicar uma vantagem para os mesmos. Entretanto, novamente, essa vantagem não foi tão grande, o que não indica uma escolha definitiva.
+
+Como os resultados se mostraram próximos em todos os quesitos, optou-se seguir com os clusters 2 (retirados do PCA), pelo fato de ter uma vantagem ligeira no aspecto principal analisado pelo trabalho. Dessa forma, as próximas análises levarão em consideração unicamente esse grupo de clusters.
+
+## Coeficiente de Silhueta
+```{r}
+fviz_silhouette(silhouette(kmeans_result$cluster, dist(df %>% select(-Revenue))))
+```
+
+## Perfil dos clusters
+```{r}
+cluster_profile <- df %>%
+  group_by(Cluster2) %>%
+  summarise(across(where(is.numeric), mean, na.rm = TRUE))
+
+print(cluster_profile)
+```
+
+Analisando o coeficiente de silhueta final, poucas informações relevantes são reveladas. No geral, o segundo cluster se mostra bem mais adequado e agrupado em relação ao primeiro, provavelmente devido ao seu tamanho maior com variáveis mais conjuntas, enquanto o segundo conta com algumas exceções.
+
+Além disso, analisando o perfil dos clusters, nota-se uma possível relação direta com a variável Revenue, onde o cluster 1 indicaria casos sem venda e o cluster 2 casos em que a venda foi realizada. Para isso, é feita uma comparação final entre os casos:
+
+## Comparação final - Clusters x Revenue
+
+```{r}
+df$Revenue <- as.integer(df$Revenue)
+df$Cluster2 <- as.integer(df$Cluster2)
+
+df$Revenue[df$Revenue == 0] <- 2
+
+df$comparison <- ifelse(df$Revenue == df$Cluster2, 1, 2)
+
+cat("Dados em que o cluster e o 'Revenue' coincidem:", sum(df$comparison == 1), "\n")
+cat("Dados em que o cluster e o 'Revenue' não coincidem:", sum(df$comparison == 2), "\n")
+```
+
+```{r}
+ggplot(pca_data, aes(x = PC1, y = PC2, color = factor(df$comparison))) +
+  geom_point(alpha = 0.7) +
+  scale_color_manual(values = c("grey", "red"), labels = c("Correspondente", "Diferente")) +
+  labs(
+    title = "Comparação entre Revenue e Clusters",
+    x = "PC1",
+    y = "PC2",
+    color = "Comparação"
+  ) +
+  theme_minimal()
+```
+
+# Conclusão
+
+Analisando o estudo completo, conclui-se de que o modelo de clusterização, aliado às técnicas de redução de dimensionalidade e as visualizações exploratórias, foi capaz de traçar um perfil consideravelmente assertivo dos visitantes das páginas do site monitorado, conseguindo diferenciar bem visitas que levam ou não à compra. 
+
+Com relação a variáveis principais consideradas para essa diferenciação, as principais através de todas as análises se mostraram as mesmas: Administrative, Administrative_Duration, Informational, Informational_Duration, ProductRelated, ProductRelated_Duration, BounceRates e ExitRates. Dentre essas, as seis primeiras, indicativas de número de vezes em que o visitante entrou em páginas de cada tipo (administrativas, informativas e de produto), além do tempo gasto nessas páginas, foram as mais relacionadas diretamente com a possibilidade de compra de produtos, enquanto as duas outras, indicativas de saída e "rejeição" da página (saída sem clicar em nada), tem relação diretamente contrária. 
+
+Analisando os resultados, nota-se que o resultado dos grupos gerados não foi perfeito para realização de uma previsão de compra ou não, mas esse não era o objetivo diretamente; para o propósito, de traçar esse perfil específico de clientes e identificar clientes potenciais que talvez não tenham comprado em tal visita, mas que poderiam ter comprado em outra, a análise se mostrou bastante eficaz. 
