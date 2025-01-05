@@ -1,4 +1,4 @@
-# Analise-de-comportamento-de-usuarios-em-e-commerce
+# Análise de comportamento de usuários em e-commerce
 
 Esse trabalho se trata de um relatório em RMarkdown que tem como objetivo a análise do comportamento de usuários de um site de vendas virtuais, para ajudar a determinar a probabilidade de compra de produtos no final de sua visita. Para isso, foram utilizadas técnicas de aprendizado não supervisionado para encontrar as características mais determimantes para se identificar usuários que se tornaram clientes, e identificar visitantes que não compraram mais prováveis de se tornarem clientes para ajudar dessa forma técnicas de marketing direcionado.
 
